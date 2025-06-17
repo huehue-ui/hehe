@@ -9,15 +9,19 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
 	_ = godotenv.Load()
 	d := db.Connect()
 	defer d.Close()
-	
-	r := chi.NewRouter()
 
+	// Prometheus and monitoring setup
+	http.Handle("/metrics", promhttp.Handler())
+	utils.InitMetrics()
+
+	r := chi.NewRouter()
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.With(utils.MethodGuard("GET")).Get("/delivery", handler.DeliveryHandler)
 	})

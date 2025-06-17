@@ -8,6 +8,8 @@ import (
 func MethodGuard(method string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			RequestCount.WithLabelValues(r.URL.Path, r.Method).Inc()
+
 			if r.Method != method {
 				ErrorJSON(w, http.StatusMethodNotAllowed, ErrMethodNotAllowed)
 				return
