@@ -1,8 +1,8 @@
 package db
 
 import (
-	"campaignservice/models"
-	"campaignservice/utils"
+	"campaignservice/internal/domain/models"
+	"campaignservice/pkg/utils"
 	"database/sql"
 	"fmt"
 	"log"

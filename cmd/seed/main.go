@@ -1,8 +1,8 @@
 package main
 
 import (
-	"campaignservice/db"
-	"campaignservice/utils"
+	"campaignservice/internal/infrastructure/db"
+	"campaignservice/pkg/utils"
 	"database/sql"
 	"flag"
 	"fmt"

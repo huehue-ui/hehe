@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"campaignservice/db"
-	"campaignservice/models"
-	"campaignservice/utils"
+	"campaignservice/internal/domain/models"
+	"campaignservice/internal/infrastructure/db"
+	"campaignservice/pkg/utils"
 	"encoding/json"
 	"net/http"
 	"strconv"

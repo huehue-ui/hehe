@@ -1,9 +1,9 @@
 package main
 
 import (
-	"campaignservice/db"
-	"campaignservice/handler"
-	"campaignservice/utils"
+	"campaignservice/internal/api/handler"
+	"campaignservice/internal/infrastructure/db"
+	"campaignservice/pkg/utils"
 	"log"
 	"net/http"
 
