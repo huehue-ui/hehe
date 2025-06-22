@@ -3,7 +3,8 @@ testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  cmd = "lsof -ti tcp:8080 | xargs kill -9 || true & go run main.go"
+  cmd = "lsof -ti tcp:8080 | xargs kill -9 || true & go build -o ./tmp/api ./cmd/api/main.go && ./tmp/api"
+  bin = ""
   exclude_dir = []
   exclude_file = ["seed.go"]
   exclude_regex = ["_test.go"]
