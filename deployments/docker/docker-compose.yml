@@ -1,40 +1,82 @@
 version: '3.8'
 
+# Defines the services, networks, and volumes for the application stack.
 services:
+  # Campaign Service: The main application
   campaignservice:
-    build: .
+    build:
+      context: ../../ # Build context is the project root
+      dockerfile: deployments/docker/Dockerfile # Path to the Dockerfile
     ports:
-      - "8080:8080"
+      - "8080:8080" # Map host port 8080 to container port 8080
     environment:
+      # Database connection details for the application
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_USER=postgres
-      - DB_PASSWORD=postgres
+      - DB_PASSWORD=postgres # In a real scenario, use Docker secrets or a more secure way to handle passwords
       - DB_NAME=campaigns
     depends_on:
-      - postgres
+      postgres: # Ensures postgres service starts and is healthy (basic check) before this service
+        condition: service_started # Waits for postgres to start, entrypoint.sh handles actual readiness
+    networks:
+      - app-network
 
+  # PostgreSQL Database Service
   postgres:
-    image: postgres:14
-    restart: always
+    image: postgres:14 # Use official PostgreSQL 14 image
+    restart: always # Always restart the container if it stops
     environment:
+      # Credentials for the PostgreSQL database
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: postgres # Same as above, use secrets for production
       POSTGRES_DB: campaigns
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data # Persist database data using a named volume
+    ports:
+      - "5432:5432" # Expose PostgreSQL port to the host (optional, useful for debugging)
+    networks:
+      - app-network
 
+  # Prometheus Monitoring Service
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus:v2.53.1 # Use a specific version of Prometheus
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      # Mount the Prometheus configuration file from the host into the container
+      # Corrected path to point to the monitoring directory
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
-      - "9090:9090"
+      - "9090:9090" # Map host port 9090 to container port 9090 for Prometheus UI
+    networks:
+      - app-network
+    depends_on:
+      - campaignservice # Prometheus should start after campaignservice to scrape its metrics
 
+  # Grafana Visualization Service
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:11.1.0 # Use a specific version of Grafana
     ports:
-      - "3000:3000"
+      - "3000:3000" # Map host port 3000 to container port 3000 for Grafana UI
+    volumes:
+      - grafana-storage:/var/lib/grafana # Persist Grafana data
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin # Default admin password, change for production
+    networks:
+      - app-network
+    depends_on:
+      - prometheus # Grafana depends on Prometheus as a data source
 
+# Named volumes for data persistence
 volumes:
-  pgdata:
+  pgdata: # Stores PostgreSQL data
+  grafana-storage: # Stores Grafana dashboards and settings
+
+# Define a custom network for services to communicate
+networks:
+  app-network:
+    driver: bridge

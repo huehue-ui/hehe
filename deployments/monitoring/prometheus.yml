@@ -1,7 +1,38 @@
+# Global Prometheus configuration settings
 global:
-  scrape_interval: 5s
+  scrape_interval: 15s # How frequently to scrape targets by default
+  evaluation_interval: 15s # How frequently to evaluate rules
 
+# Alerting settings (optional, can be configured if alertmanager is used)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#           # - alertmanager:9093
+
+# Rule files (optional, for recording or alerting rules)
+# rule_files:
+#   - "first_rules.yml"
+#   - "second_rules.yml"
+
+# A list of scrape configurations.
 scrape_configs:
+  # Job for scraping metrics from the campaignservice itself.
   - job_name: 'campaignservice'
+    # metrics_path defaults to '/metrics'
+    # scheme defaults to 'http'.
     static_configs:
-      - targets: ['host.docker.internal:8080']
+      # Target campaignservice.
+      # 'campaignservice' is the service name defined in docker-compose.yml,
+      # and Docker's internal DNS will resolve it to the container's IP.
+      # Port 8080 is where the service exposes its /metrics endpoint.
+      - targets: ['campaignservice:8080']
+        labels:
+          instance: campaignservice1 # Label to identify this specific instance
+
+  # Optional: Job for scraping metrics from Prometheus itself (for meta-monitoring)
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090'] # Prometheus scrapes its own metrics
+        labels:
+          instance: prometheus_server
