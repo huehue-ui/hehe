@@ -5,7 +5,7 @@ import (
 	"campaignservice/internal/domain/models"
 	"campaignservice/internal/infrastructure/db"
 	"campaignservice/pkg/utils"
-	"context" // Added for Redis
+	// "context" // No longer needed here after commenting out Redis ping
 	"fmt"
 	"log"
 	"net/http"
@@ -14,10 +14,11 @@ import (
 	"syscall" // Added for graceful shutdown
 	"time"    // Added for graceful shutdown
 
-	"github.com/gin-gonic/gin" // Switched to Gin
+	"campaignservice/internal/infrastructure/cache" // Added for MemoryCache
+	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
+	// "github.com/redis/go-redis/v9" // Commented out Redis
 )
 
 // GinPrometheusMiddleware creates a Gin middleware for Prometheus metrics.
@@ -78,21 +79,24 @@ func main() {
 
 	log.Println("Successfully connected to Database and configured connection pool.")
 
+	// In-memory cache setup
+	memCache := cache.NewMemoryCache()
+	log.Println("In-memory cache initialized.")
 
-	// Redis client setup
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisAddr,
-		Password: cfg.RedisPassword,
-		DB:       cfg.RedisDB,
-	})
-	defer rdb.Close()
+	// // Redis client setup (Commented out)
+	// rdb := redis.NewClient(&redis.Options{
+	// 	Addr:     cfg.RedisAddr,
+	// 	Password: cfg.RedisPassword,
+	// 	DB:       cfg.RedisDB,
+	// })
+	// defer rdb.Close()
 
-	ctxPing, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelPing()
-	if _, err := rdb.Ping(ctxPing).Result(); err != nil {
-		log.Fatalf("Could not connect to Redis: %v", err)
-	}
-	log.Println("Successfully connected to Redis")
+	// ctxPing, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
+	// defer cancelPing()
+	// if _, err := rdb.Ping(ctxPing).Result(); err != nil {
+	// 	log.Fatalf("Could not connect to Redis: %v", err)
+	// }
+	// log.Println("Successfully connected to Redis")
 
 	// Prometheus metrics server (runs on a separate goroutine and port)
 	go func() {
@@ -114,7 +118,7 @@ func main() {
 
 	// Initialize handlers (DeliveryHandler needs to be adapted for Gin)
 	// For now, assuming DeliveryHandler is a struct with ServeHTTPForGin(c *gin.Context)
-	deliveryHandler := handler.NewDeliveryHandler(d, rdb)
+	deliveryHandler := handler.NewDeliveryHandler(d, memCache) // Pass memCache instead of rdb
 
 	// Routes
 	v1 := router.Group("/v1")

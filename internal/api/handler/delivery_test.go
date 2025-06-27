@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"campaignservice/internal/infrastructure/cache" // For MemoryCache
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/redis/go-redis/v9"
-	"github.com/redis/go-redis/redismock/v9" // Official mock for go-redis
+	// "github.com/redis/go-redis/v9" // Commented out
+	// "github.com/redis/go-redis/redismock/v9" // Commented out
 	"github.com/stretchr/testify/assert"
 	"github.com/gin-gonic/gin" // Added for Gin context
 )
@@ -69,37 +70,18 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 	})
 
 	t.Run("Successful response from cache", func(t *testing.T) {
-		mockRdb := new(MockRedisCmdable) // Using our testify mock
+		memCacheInstance := cache.NewMemoryCache()
+		cacheKey := "delivery:app1:ios:US:page1:limit10"
 
 		expectedCampaigns := []models.DeliveryResponse{
 			{CID: "camp1", Img: "img1.url", CTA: "Action1"},
 		}
 		expectedBodyBytes, _ := json.Marshal(expectedCampaigns)
 
-		// Mock Redis GET
-		// Create a StringCmd that returns the expected data
-		cmdResult := redis.NewStringResult(string(expectedBodyBytes), nil)
-		mockRdb.On("Get", mock.Anything, "delivery:app1:ios:US:page1:limit10").Return(cmdResult).Once()
+		// Pre-populate the in-memory cache
+		memCacheInstance.Set(cacheKey, expectedBodyBytes, cacheTTLE)
 
-		// We need a redis.Client that uses our mock Cmdable.
-		// This is tricky as redis.Client doesn't directly take a Cmdable.
-		// For true unit tests, the handler should depend on an interface we define,
-		// e.g., type CacheClient interface { Get(...) ...; Set(...) ... }
-		// For now, we'll adapt. The NewDeliveryHandler expects *redis.Client.
-		// We will pass nil for db as it shouldn't be called.
-		// This highlights a limitation of direct *redis.Client dependency for easy mocking.
-		// A better approach is to use go-redis/redismock/v9 for mocking *redis.Client behavior.
-
-		// Let's use go-redis/redismock/v9
-		rdb, rdbMock := redis.NewClient( &redis.Options{}), redis.NewMock() // This is not how redismock works.
-		// redismock.NewClientMock() is the correct way.
-
-		// Corrected approach with redismock
-		mrdb, mockRedis := redis.NewClientMock()
-
-		mockRedis.ExpectGet("delivery:app1:ios:US:page1:limit10").SetVal(string(expectedBodyBytes))
-
-		handler := NewDeliveryHandler(nil, mrdb) // Pass nil for DB
+		handler := NewDeliveryHandler(nil, memCacheInstance) // Pass nil for DB
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
 		c := setupGinTestContext(rr, req)
@@ -107,8 +89,8 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.JSONEq(t, string(expectedBodyBytes), rr.Body.String())
-		assert.Equal(t, "HIT", rr.Header().Get("X-Cache"))
-		mockRedis.ExpectationsWereMet() // Verify all GET expectations were met
+		assert.Equal(t, "IN_MEMORY_HIT", rr.Header().Get("X-Cache-Type"))
+		// No mock expectations to verify for MemoryCache in this direct way
 	})
 
 	t.Run("Cache miss, successful DB fetch, and cache SET", func(t *testing.T) {
@@ -116,45 +98,42 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 		assert.NoError(t, err)
 		defer db.Close()
 
-		mrdb, mockRedis := redis.NewClientMock()
+		memCacheInstance := cache.NewMemoryCache()
+		cacheKey := "delivery:app1:ios:US:page1:limit10"
 
 		// Expected DB query and result
 		rows := sqlmock.NewRows([]string{"campaign_id", "campaign_name", "image_url", "call_to_action"}).
 			AddRow("camp1", "Campaign One", "img1.url", "Action1")
 
-		// Remember the query from db.go - it's complex. For unit tests, we match the exact SQL.
-		// This is a good argument for having repository interfaces.
-		// For now, we'll use sqlmock.AnyArg() for the complex query string.
-		// Or, more precisely, match the query string from db.GetTargetedCampaigns
-		// The actual query string is long, using AnyMatcher here for brevity in this example.
-		// In a real test, you'd put the exact query.
-		dbMock.ExpectQuery("SELECT DISTINCT c.campaign_id, c.campaign_name, c.image_url, c.call_to_action"). // Simplified, use actual query
-									WithArgs("app1", "US", "ios", 10, 0). // Args: appID, country, os, limit, offset
+		dbMock.ExpectQuery("SELECT DISTINCT c.campaign_id, c.campaign_name, c.image_url, c.call_to_action").
+									WithArgs("app1", "US", "ios", 10, 0).
 									WillReturnRows(rows)
 
-		// Mock Redis GET (cache miss)
-		mockRedis.ExpectGet("delivery:app1:ios:US:page1:limit10").SetErr(redis.Nil)
-
-		// Mock Redis SET
-		expectedCampaigns := []models.DeliveryResponse{
-			{CID: "camp1", Img: "img1.url", CTA: "Action1"},
-		}
-		expectedCacheBodyBytes, _ := json.Marshal(expectedCampaigns)
-		mockRedis.ExpectSet("delivery:app1:ios:US:page1:limit10", string(expectedCacheBodyBytes), cacheTTLE).SetVal("OK")
+		// Cache should be empty initially for this key
+		_, found := memCacheInstance.Get(cacheKey)
+		assert.False(t, found, "Cache should be empty for %s before request", cacheKey)
 
 
-		handler := NewDeliveryHandler(db, mrdb)
+		handler := NewDeliveryHandler(db, memCacheInstance)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
 		c := setupGinTestContext(rr, req)
 		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.JSONEq(t, string(expectedCacheBodyBytes), rr.Body.String())
-		assert.Equal(t, "MISS", rr.Header().Get("X-Cache"))
+		expectedCampaigns := []models.DeliveryResponse{
+			{CID: "camp1", Img: "img1.url", CTA: "Action1"},
+		}
+		expectedBodyBytes, _ := json.Marshal(expectedCampaigns)
+		assert.JSONEq(t, string(expectedBodyBytes), rr.Body.String())
+		assert.Equal(t, "MISS", rr.Header().Get("X-Cache-Type"))
 
 		assert.NoError(t, dbMock.ExpectationsWereMet())
-		assert.NoError(t, mockRedis.ExpectationsWereMet())
+
+		// Verify item was cached
+		cachedValue, foundAfter := memCacheInstance.Get(cacheKey)
+		assert.True(t, foundAfter, "Value should be in cache after request for key %s", cacheKey)
+		assert.JSONEq(t, string(expectedBodyBytes), string(cachedValue))
 	})
 
 	t.Run("Cache miss, DB error", func(t *testing.T) {
@@ -162,16 +141,18 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 		assert.NoError(t, err)
 		defer db.Close()
 
-		mrdb, mockRedis := redis.NewClientMock()
+		memCacheInstance := cache.NewMemoryCache()
+		cacheKey := "delivery:app1:ios:US:page1:limit10"
 
-		dbMock.ExpectQuery("SELECT DISTINCT"). // Simplified
+		dbMock.ExpectQuery("SELECT DISTINCT").
 									WithArgs("app1", "US", "ios", 10, 0).
 									WillReturnError(errors.New("DB error"))
 
-		mockRedis.ExpectGet("delivery:app1:ios:US:page1:limit10").SetErr(redis.Nil)
-		// No SET should be called
+		// Cache should be empty initially
+		_, found := memCacheInstance.Get(cacheKey)
+		assert.False(t, found, "Cache should be empty for %s before request", cacheKey)
 
-		handler := NewDeliveryHandler(db, mrdb)
+		handler := NewDeliveryHandler(db, memCacheInstance)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
 		c := setupGinTestContext(rr, req)
@@ -179,10 +160,13 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 
 		assert.Equal(t, http.StatusInternalServerError, rr.Code)
 		assert.JSONEq(t, `{"error":"internal server error"}`, rr.Body.String())
-		assert.Equal(t, "MISS", rr.Header().Get("X-Cache"))
+		assert.Equal(t, "MISS", rr.Header().Get("X-Cache-Type"))
 
 		assert.NoError(t, dbMock.ExpectationsWereMet())
-		assert.NoError(t, mockRedis.ExpectationsWereMet())
+
+		// Item should NOT be cached if DB error occurred
+		_, foundAfter := memCacheInstance.Get(cacheKey)
+		assert.False(t, foundAfter, "Value should NOT be in cache after DB error for key %s", cacheKey)
 	})
 
 	t.Run("Cache miss, DB returns no campaigns", func(t *testing.T) {
@@ -190,28 +174,34 @@ func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 		assert.NoError(t, err)
 		defer db.Close()
 
-		mrdb, mockRedis := redis.NewClientMock()
+		memCacheInstance := cache.NewMemoryCache()
+		cacheKey := "delivery:app1:ios:US:page1:limit10"
 
 		rows := sqlmock.NewRows([]string{"campaign_id", "campaign_name", "image_url", "call_to_action"}) // No rows
 		dbMock.ExpectQuery("SELECT DISTINCT").WithArgs("app1", "US", "ios", 10, 0).WillReturnRows(rows)
 
-		mockRedis.ExpectGet("delivery:app1:ios:US:page1:limit10").SetErr(redis.Nil)
+		// Cache should be empty initially
+		_, found := memCacheInstance.Get(cacheKey)
+		assert.False(t, found, "Cache should be empty for %s before request", cacheKey)
 
-		emptyResponseBytes, _ := json.Marshal([]models.DeliveryResponse{})
-		mockRedis.ExpectSet("delivery:app1:ios:US:page1:limit10", string(emptyResponseBytes), cacheTTLE).SetVal("OK")
 
-		handler := NewDeliveryHandler(db, mrdb)
+		handler := NewDeliveryHandler(db, memCacheInstance)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
 		c := setupGinTestContext(rr, req)
 		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.JSONEq(t, "[]", rr.Body.String())
-		assert.Equal(t, "MISS", rr.Header().Get("X-Cache"))
+		assert.JSONEq(t, "[]", rr.Body.String()) // Expect empty JSON array
+		assert.Equal(t, "MISS", rr.Header().Get("X-Cache-Type"))
 
 		assert.NoError(t, dbMock.ExpectationsWereMet())
-		assert.NoError(t, mockRedis.ExpectationsWereMet())
+
+		// Verify empty response was cached
+		emptyResponseBytes, _ := json.Marshal([]models.DeliveryResponse{})
+		cachedValue, foundAfter := memCacheInstance.Get(cacheKey)
+		assert.True(t, foundAfter, "Empty response should be in cache after request for key %s", cacheKey)
+		assert.JSONEq(t, string(emptyResponseBytes), string(cachedValue))
 	})
 
 }

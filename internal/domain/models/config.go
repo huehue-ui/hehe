@@ -16,9 +16,9 @@ type AppConfig struct {
 	DBPassword    string
 	DBName        string
 	AppPort       string
-	RedisAddr     string // e.g., "localhost:6379"
-	RedisPassword string // empty if no password
-	RedisDB       int    // e.g., 0
+	// RedisAddr     string // e.g., "localhost:6379" // Commented out
+	// RedisPassword string // empty if no password    // Commented out
+	// RedisDB       int    // e.g., 0                 // Commented out
 }
 
 // LoadConfig loads configuration from .env file and environment variables
@@ -34,9 +34,9 @@ func LoadConfig() (*AppConfig, error) {
 		DBPassword:    getEnv("DB_PASSWORD", "password"),
 		DBName:        getEnv("DB_NAME", "campaigndb"),
 		AppPort:       getEnv("APP_PORT", "8080"),
-		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword: getEnv("REDIS_PASSWORD", ""),
-		RedisDB:       getEnvAsInt("REDIS_DB", 0),
+		// RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"), // Commented out
+		// RedisPassword: getEnv("REDIS_PASSWORD", ""),            // Commented out
+		// RedisDB:       getEnvAsInt("REDIS_DB", 0),              // Commented out
 	}
 	return cfg, nil
 }

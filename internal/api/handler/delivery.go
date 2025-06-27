@@ -13,28 +13,30 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin" // Added Gin
-	"github.com/redis/go-redis/v9"
+	"campaignservice/internal/infrastructure/cache" // Added for MemoryCache
+	"github.com/gin-gonic/gin"
+	// "github.com/redis/go-redis/v9" // Commented out Redis
 )
 
 const (
-	cacheTTLE = 5 * time.Minute // Cache TTL for delivery responses
+	cacheTTLE = 5 * time.Minute // Cache TTL for delivery responses (reused for memory cache)
 )
 
 // DeliveryHandler struct now holds dependencies
 type DeliveryHandler struct {
-	db  *sql.DB
-	rdb *redis.Client
+	db    *sql.DB
+	memCache *cache.MemoryCache // Changed rdb to memCache
+	// rdb *redis.Client // Commented out Redis client
 }
 
 // NewDeliveryHandler creates a new DeliveryHandler with dependencies
-func NewDeliveryHandler(db *sql.DB, rdb *redis.Client) *DeliveryHandler {
-	return &DeliveryHandler{db: db, rdb: rdb}
+func NewDeliveryHandler(db *sql.DB, memCache *cache.MemoryCache) *DeliveryHandler {
+	return &DeliveryHandler{db: db, memCache: memCache}
 }
 
 // ServeHTTPGin is the method that handles the HTTP requests for Gin
 func (h *DeliveryHandler) ServeHTTPGin(c *gin.Context) {
-	ctx := c.Request.Context() // Use Gin context's underlying request context
+	// ctx := c.Request.Context() // Context not directly used by MemoryCache Get/Set
 
 	appID := c.Query("app")
 	osParam := c.Query("os")
@@ -69,32 +71,31 @@ func (h *DeliveryHandler) ServeHTTPGin(c *gin.Context) {
 	// Create a cache key
 	cacheKey := fmt.Sprintf("delivery:%s:%s:%s:page%d:limit%d", appID, osParam, country, page, limit)
 
-	// Try to get from cache first
-	cachedData, err := h.rdb.Get(ctx, cacheKey).Result()
-	if err == nil && cachedData != "" {
+	// Try to get from in-memory cache first
+	cachedData, found := h.memCache.Get(cacheKey)
+	if found {
 		// Cache hit
-		log.Printf("Cache HIT for key: %s", cacheKey)
-		c.Header("X-Cache", "HIT")
-		// Data in Redis is already JSON, so write it directly as raw JSON
-		c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(cachedData))
-		utils.RecordCacheHit()
+		log.Printf("In-memory Cache HIT for key: %s", cacheKey)
+		c.Header("X-Cache-Type", "IN_MEMORY_HIT")
+		c.Data(http.StatusOK, "application/json; charset=utf-8", cachedData) // cachedData is []byte
+		utils.RecordCacheHit() // Assuming this metric is generic for any cache type
 		return
-	} else if err != redis.Nil {
-		log.Printf("Redis GET error for key %s: %v. Proceeding to DB.", cacheKey, err)
-	} else {
-		log.Printf("Cache MISS for key: %s", cacheKey)
-		utils.RecordCacheMiss()
 	}
-	c.Header("X-Cache", "MISS")
 
-	campaigns, err := db.GetTargetedCampaigns(h.db, appID, country, osParam, limit, offset)
-	if err != nil {
+	log.Printf("In-memory Cache MISS for key: %s", cacheKey)
+	utils.RecordCacheMiss() // Assuming this metric is generic
+	c.Header("X-Cache-Type", "MISS")
+
+
+	// Cache miss, fetch from DB
+	dbCampaigns, errDb := db.GetTargetedCampaigns(h.db, appID, country, osParam, limit, offset)
+	if errDb != nil {
 		utils.ErrorJSONGin(c, http.StatusInternalServerError, utils.InternalServerError)
 		return
 	}
 
 	var response []models.DeliveryResponse
-	for _, camp := range campaigns { // Renamed loop variable to avoid conflict
+	for _, camp := range dbCampaigns {
 		response = append(response, models.DeliveryResponse{
 			CID: camp.CampaignID,
 			Img: camp.ImageURL,
@@ -102,28 +103,26 @@ func (h *DeliveryHandler) ServeHTTPGin(c *gin.Context) {
 		})
 	}
 
+	// Marshal response for caching and sending
+	var responseBytesToCache []byte
+	var marshalErr error
+
 	if len(response) == 0 {
-		emptyResponseBytes, _ := json.Marshal([]models.DeliveryResponse{})
-		errSet := h.rdb.Set(ctx, cacheKey, emptyResponseBytes, cacheTTLE).Err()
-		if errSet != nil {
-			log.Printf("Redis SET error for empty response (key %s): %v", cacheKey, errSet)
-		}
-		c.Data(http.StatusOK, "application/json; charset=utf-8", emptyResponseBytes)
-		return
+		// Cache empty response as well
+		responseBytesToCache, marshalErr = json.Marshal([]models.DeliveryResponse{})
+	} else {
+		responseBytesToCache, marshalErr = json.Marshal(response)
 	}
 
-	responseBytes, err := json.Marshal(response)
-	if err != nil {
-		log.Printf("Error marshalling delivery response: %v", err)
+	if marshalErr != nil {
+		log.Printf("Error marshalling delivery response: %v", marshalErr)
 		utils.ErrorJSONGin(c, http.StatusInternalServerError, utils.InternalServerError)
 		return
 	}
 
-	errSet := h.rdb.Set(ctx, cacheKey, responseBytes, cacheTTLE).Err()
-	if errSet != nil {
-		log.Printf("Redis SET error for key %s: %v", cacheKey, errSet)
-	} else {
-		log.Printf("Successfully cached response for key: %s", cacheKey)
-	}
-	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBytes)
+	// Store in in-memory cache
+	h.memCache.Set(cacheKey, responseBytesToCache, cacheTTLE)
+	log.Printf("Successfully stored response in in-memory cache for key: %s", cacheKey)
+
+	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBytesToCache)
 }
