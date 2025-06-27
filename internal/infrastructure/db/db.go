@@ -62,9 +62,6 @@ func GetTargetedCampaigns(db *sql.DB, appID, country, os string, limit int, offs
 	query := `
 		SELECT DISTINCT c.campaign_id, c.campaign_name, c.image_url, c.call_to_action
 		FROM campaigns c
-		LEFT JOIN targeting_rules tr_app_id ON c.campaign_id = tr_app_id.campaign_id AND tr_app_id.dimension = 'app_id'
-		LEFT JOIN targeting_rules tr_country ON c.campaign_id = tr_country.campaign_id AND tr_country.dimension = 'country'
-		LEFT JOIN targeting_rules tr_os ON c.campaign_id = tr_os.campaign_id AND tr_os.dimension = 'os'
 		WHERE c.campaign_status = 'ACTIVE'
 		  AND (
 			EXISTS (SELECT 1 FROM targeting_rules tr WHERE tr.campaign_id = c.campaign_id AND tr.dimension = 'app_id' AND tr.type = 'include' AND tr.value = $1)
@@ -145,25 +142,4 @@ func GetCampaignByID(db *sql.DB, campaignID string) (*models.Campaign, error) {
 		return nil, err
 	}
 	return &c, nil
-}
-
-// Helper function (from original file, kept for reference or if needed elsewhere, though not used in current GetTargetedCampaigns)
-func buildConditionsAndArgs(dimensionValues map[string]string) ([]string, []interface{}) {
-	var conditions []string
-	var args []interface{}
-	argIndex := 1
-
-	for _, dim := range utils.TargetingDimensions { // Assuming utils.TargetingDimensions is ["app_id", "country", "os"] in order
-		val := dimensionValues[dim]
-		// This logic seems overly complex and potentially incorrect for combining include/exclude.
-		// It was part of the original GetTargetedCampaigns.
-		// The new query in GetTargetedCampaigns uses a different approach.
-		conditions = append(conditions,
-			fmt.Sprintf("(tr.dimension = '%s' AND tr.type = 'include' AND tr.value != $%d)", dim, argIndex), // This seems like an error, should it be = ?
-			fmt.Sprintf("(tr.dimension = '%s' AND tr.type = 'exclude' AND tr.value = $%d)", dim, argIndex),
-		)
-		args = append(args, val)
-		argIndex++
-	}
-	return conditions, args
 }
