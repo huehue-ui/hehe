@@ -17,89 +17,29 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/redismock/v9" // Official mock for go-redis
 	"github.com/stretchr/testify/assert"
-	// "github.com/stretchr/testify/mock" // No longer using testify/mock for Redis directly
+	"github.com/gin-gonic/gin" // Added for Gin context
 )
 
-// MockRedisCmdable is a mock for go-redis's Cmdable interface (which Client implements)
-// We only need to mock the methods actually used by the handler: Get, Set.
-// For simplicity, we can use redis.Client itself and override specific command behaviors
-// or use a dedicated mocking library if more complex Redis interactions were needed.
-// Here, we'll use an actual redis.Client connected to a redismock.
-// An alternative is to define our own simple interface for what we need from Redis.
-
-// For this test, we'll use go-redis's own mock `redis.NewClient(&redis.Options{})` and then use `mockConstructor` for specific commands.
-// However, a more common approach for unit testing with testify is to define an interface and mock that.
-// Let's try a simpler approach by mocking `Cmdable` if possible or using a library like `go-redis-mock`.
-// `go-redis/redismock/v9` is the official mock for go-redis.
-
-// MockRedis is a testify mock for the redis.Cmdable interface
-// type MockRedisCmdable struct {
-// 	mock.Mock
-// 	redis.Cmdable // Embed to satisfy the interface if methods are called directly
-// }
-
-// func (m *MockRedisCmdable) Get(ctx context.Context, key string) *redis.StringCmd {
-// 	args := m.Called(ctx, key)
-// 	return args.Get(0).(*redis.StringCmd)
-// }
-
-// func (m *MockRedisCmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
-// 	args := m.Called(ctx, key, value, expiration)
-// 	return args.Get(0).(*redis.StatusCmd)
-// }
-
-// // Ping to satisfy *redis.Client, not strictly needed for handler if it only uses Get/Set via Cmdable
-// func (m *MockRedisCmdable) Ping(ctx context.Context) *redis.StatusCmd {
-//     args := m.Called(ctx)
-//     return args.Get(0).(*redis.StatusCmd)
-// }
-
-// MockRedisClient is a mock for go-redis's Cmdable interface (which Client implements)
-// We only need to mock the methods actually used by the handler: Get, Set.
-// For simplicity, we can use redis.Client itself and override specific command behaviors
-// or use a dedicated mocking library if more complex Redis interactions were needed.
-// Here, we'll use an actual redis.Client connected to a redismock.
-// An alternative is to define our own simple interface for what we need from Redis.
-
-// For this test, we'll use go-redis's own mock `redis.NewClient(&redis.Options{})` and then use `mockConstructor` for specific commands.
-// However, a more common approach for unit testing with testify is to define an interface and mock that.
-// Let's try a simpler approach by mocking `Cmdable` if possible or using a library like `go-redis-mock`.
-// `go-redis/redismock/v9` is the official mock for go-redis.
-
-// MockRedis is a testify mock for the redis.Cmdable interface
-type MockRedisCmdable struct {
-	mock.Mock
-	redis.Cmdable // Embed to satisfy the interface if methods are called directly
-}
-
-func (m *MockRedisCmdable) Get(ctx context.Context, key string) *redis.StringCmd {
-	args := m.Called(ctx, key)
-	return args.Get(0).(*redis.StringCmd)
-}
-
-func (m *MockRedisCmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
-	args := m.Called(ctx, key, value, expiration)
-	return args.Get(0).(*redis.StatusCmd)
-}
-
-// Ping to satisfy *redis.Client, not strictly needed for handler if it only uses Get/Set via Cmdable
-func (m *MockRedisCmdable) Ping(ctx context.Context) *redis.StatusCmd {
-    args := m.Called(ctx)
-    return args.Get(0).(*redis.StatusCmd)
+// Helper function to create a Gin context for testing
+func setupGinTestContext(rr *httptest.ResponseRecorder, req *http.Request) *gin.Context {
+	c, _ := gin.CreateTestContext(rr)
+	c.Request = req
+	return c
 }
 
 
-func TestDeliveryHandler(t *testing.T) {
+func TestDeliveryHandler_Gin(t *testing.T) { // Renamed test function
 	// Setup common variables
 	path := "/v1/delivery"
 
 	t.Run("Missing 'app' query parameter", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", path+"?os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
+		c := setupGinTestContext(rr, req)
 
 		// We don't need DB or Redis mocks for this validation error
 		handler := NewDeliveryHandler(nil, nil)
-		handler.ServeHTTP(rr, req)
+		handler.ServeHTTPGin(c) // Call the Gin handler
 
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
 		expectedBody := `{"error":"` + utils.ErrMissingApp + `"}`
@@ -109,8 +49,9 @@ func TestDeliveryHandler(t *testing.T) {
 	t.Run("Missing 'os' query parameter", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", path+"?app=app1&country=US", nil)
 		rr := httptest.NewRecorder()
+		c := setupGinTestContext(rr, req)
 		handler := NewDeliveryHandler(nil, nil)
-		handler.ServeHTTP(rr, req)
+		handler.ServeHTTPGin(c)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
 		expectedBody := `{"error":"` + utils.ErrMissingOS + `"}`
 		assert.JSONEq(t, expectedBody, rr.Body.String())
@@ -119,8 +60,9 @@ func TestDeliveryHandler(t *testing.T) {
 	t.Run("Missing 'country' query parameter", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios", nil)
 		rr := httptest.NewRecorder()
+		c := setupGinTestContext(rr, req)
 		handler := NewDeliveryHandler(nil, nil)
-		handler.ServeHTTP(rr, req)
+		handler.ServeHTTPGin(c)
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
 		expectedBody := `{"error":"` + utils.ErrMissingCountry + `"}`
 		assert.JSONEq(t, expectedBody, rr.Body.String())
@@ -160,7 +102,8 @@ func TestDeliveryHandler(t *testing.T) {
 		handler := NewDeliveryHandler(nil, mrdb) // Pass nil for DB
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
+		c := setupGinTestContext(rr, req)
+		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.JSONEq(t, string(expectedBodyBytes), rr.Body.String())
@@ -203,7 +146,8 @@ func TestDeliveryHandler(t *testing.T) {
 		handler := NewDeliveryHandler(db, mrdb)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
+		c := setupGinTestContext(rr, req)
+		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.JSONEq(t, string(expectedCacheBodyBytes), rr.Body.String())
@@ -230,7 +174,8 @@ func TestDeliveryHandler(t *testing.T) {
 		handler := NewDeliveryHandler(db, mrdb)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
+		c := setupGinTestContext(rr, req)
+		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusInternalServerError, rr.Code)
 		assert.JSONEq(t, `{"error":"internal server error"}`, rr.Body.String())
@@ -258,7 +203,8 @@ func TestDeliveryHandler(t *testing.T) {
 		handler := NewDeliveryHandler(db, mrdb)
 		req, _ := http.NewRequest("GET", path+"?app=app1&os=ios&country=US", nil)
 		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
+		c := setupGinTestContext(rr, req)
+		handler.ServeHTTPGin(c)
 
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.JSONEq(t, "[]", rr.Body.String())

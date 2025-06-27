@@ -2,7 +2,7 @@
 
 This service manages advertising campaigns and provides an API endpoint for campaign delivery based on targeting rules.
 
-It's built with Go, uses PostgreSQL for data storage, Redis for caching, and Prometheus for monitoring.
+It's built with Go, using the **Gin framework** for HTTP handling. It uses PostgreSQL for data storage, Redis for caching, and Prometheus for monitoring.
 
 ## Features
 - Campaign management (though CRUD APIs for campaigns are not yet exposed in this version)
@@ -146,11 +146,11 @@ This command will discover and execute all `*_test.go` files.
 - **Grafana:** While not included in the current `docker-compose.yml`, Prometheus can serve as a data source for Grafana, allowing for the creation of dashboards to visualize the application metrics.
 
 ## Project Structure
-A brief overview of the project layout:
+A brief overview of the project layout (now using Gin framework):
 ```
 .
 ├── cmd/
-│   ├── api/main.go        # Main application entry point, server setup
+│   ├── api/main.go        # Main application entry point (Gin server setup)
 │   └── seed/main.go       # Data seeder utility
 ├── deployments/
 │   ├── docker/            # Dockerfile and Docker Compose configurations

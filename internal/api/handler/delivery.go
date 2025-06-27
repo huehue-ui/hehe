@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin" // Added Gin
 	"github.com/redis/go-redis/v9"
 )
 
@@ -31,33 +32,36 @@ func NewDeliveryHandler(db *sql.DB, rdb *redis.Client) *DeliveryHandler {
 	return &DeliveryHandler{db: db, rdb: rdb}
 }
 
-// ServeHTTP is the method that handles the HTTP requests
-func (h *DeliveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context() // Use request context
+// ServeHTTPGin is the method that handles the HTTP requests for Gin
+func (h *DeliveryHandler) ServeHTTPGin(c *gin.Context) {
+	ctx := c.Request.Context() // Use Gin context's underlying request context
 
-	q := r.URL.Query()
-	appID := q.Get("app")
-	osParam := q.Get("os")
-	country := q.Get("country")
+	appID := c.Query("app")
+	osParam := c.Query("os")
+	country := c.Query("country")
 
 	switch {
 	case appID == "":
-		utils.ErrorJSON(w, http.StatusBadRequest, utils.ErrMissingApp)
+		utils.ErrorJSONGin(c, http.StatusBadRequest, utils.ErrMissingApp)
 		return
 	case osParam == "":
-		utils.ErrorJSON(w, http.StatusBadRequest, utils.ErrMissingOS)
+		utils.ErrorJSONGin(c, http.StatusBadRequest, utils.ErrMissingOS)
 		return
 	case country == "":
-		utils.ErrorJSON(w, http.StatusBadRequest, utils.ErrMissingCountry)
+		utils.ErrorJSONGin(c, http.StatusBadRequest, utils.ErrMissingCountry)
 		return
 	}
 
-	page, _ := strconv.Atoi(q.Get("page"))
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	if page < 1 {
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", strconv.Itoa(utils.DefaultApiPageLimit))
+
+	page, errPage := strconv.Atoi(pageStr)
+	if errPage != nil || page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 100 {
+
+	limit, errLimit := strconv.Atoi(limitStr)
+	if errLimit != nil || limit < 1 || limit > 100 { // Max limit of 100
 		limit = utils.DefaultApiPageLimit
 	}
 	offset := (page - 1) * limit
@@ -70,73 +74,56 @@ func (h *DeliveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err == nil && cachedData != "" {
 		// Cache hit
 		log.Printf("Cache HIT for key: %s", cacheKey)
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache", "HIT")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(cachedData))
+		c.Header("X-Cache", "HIT")
+		// Data in Redis is already JSON, so write it directly as raw JSON
+		c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(cachedData))
 		utils.RecordCacheHit()
 		return
 	} else if err != redis.Nil {
-		// Some other Redis error
 		log.Printf("Redis GET error for key %s: %v. Proceeding to DB.", cacheKey, err)
-		// Proceed to database, but log the error. Depending on policy, might return error.
 	} else {
 		log.Printf("Cache MISS for key: %s", cacheKey)
 		utils.RecordCacheMiss()
 	}
-	w.Header().Set("X-Cache", "MISS")
+	c.Header("X-Cache", "MISS")
 
-
-	// Cache miss or Redis error, fetch from DB
-	// Note: The original DeliveryHandler created a new DB connection for each request.
-	// This is inefficient. The handler now uses the injected *sql.DB.
 	campaigns, err := db.GetTargetedCampaigns(h.db, appID, country, osParam, limit, offset)
 	if err != nil {
-		// GetTargetedCampaigns already logs the error
-		utils.ErrorJSON(w, http.StatusInternalServerError, utils.InternalServerError)
+		utils.ErrorJSONGin(c, http.StatusInternalServerError, utils.InternalServerError)
 		return
 	}
 
 	var response []models.DeliveryResponse
-	for _, c := range campaigns {
+	for _, camp := range campaigns { // Renamed loop variable to avoid conflict
 		response = append(response, models.DeliveryResponse{
-			CID: c.CampaignID,
-			Img: c.ImageURL,
-			CTA: c.CallToAction,
+			CID: camp.CampaignID,
+			Img: camp.ImageURL,
+			CTA: camp.CallToAction,
 		})
 	}
 
 	if len(response) == 0 {
-		// Cache empty response as well to prevent repeated DB queries for non-existent data
 		emptyResponseBytes, _ := json.Marshal([]models.DeliveryResponse{})
 		errSet := h.rdb.Set(ctx, cacheKey, emptyResponseBytes, cacheTTLE).Err()
 		if errSet != nil {
 			log.Printf("Redis SET error for empty response (key %s): %v", cacheKey, errSet)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(emptyResponseBytes) // Return "[]"
+		c.Data(http.StatusOK, "application/json; charset=utf-8", emptyResponseBytes)
 		return
 	}
 
-	// Marshal response for caching and sending
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Error marshalling delivery response: %v", err)
-		utils.ErrorJSON(w, http.StatusInternalServerError, utils.InternalServerError)
+		utils.ErrorJSONGin(c, http.StatusInternalServerError, utils.InternalServerError)
 		return
 	}
 
-	// Store in cache
 	errSet := h.rdb.Set(ctx, cacheKey, responseBytes, cacheTTLE).Err()
 	if errSet != nil {
-		// Log error but still serve the response from DB
 		log.Printf("Redis SET error for key %s: %v", cacheKey, errSet)
 	} else {
 		log.Printf("Successfully cached response for key: %s", cacheKey)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write(responseBytes)
+	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBytes)
 }

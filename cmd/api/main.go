@@ -14,10 +14,47 @@ import (
 	"syscall" // Added for graceful shutdown
 	"time"    // Added for graceful shutdown
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin" // Switched to Gin
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9" // Added for Redis
+	"github.com/redis/go-redis/v9"
 )
+
+// GinPrometheusMiddleware creates a Gin middleware for Prometheus metrics.
+func GinPrometheusMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		// No need for ResponseWriterWrapper with Gin, status is in c.Writer.Status()
+		c.Next() // Process request
+
+		duration := time.Since(start)
+		path := c.FullPath() // Get matched route path
+		if path == "" {      // Fallback for unmatched routes
+			path = c.Request.URL.Path
+		}
+		utils.HTTPRequestDuration.With(prometheus.Labels{
+			"path":   path,
+			"method": c.Request.Method,
+			"code":   fmt.Sprintf("%d", c.Writer.Status()),
+		}).Observe(duration.Seconds())
+	}
+}
+
+// MethodGuardGin creates a Gin middleware to guard HTTP methods.
+func MethodGuardGin(allowedMethod string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Note: utils.RequestCount from Chi middleware is not used here directly.
+		// HTTPRequestDuration above provides similar request counting via histogram.
+		// If a simple counter is still desired, it can be added here or in GinPrometheusMiddleware.
+		if c.Request.Method != allowedMethod {
+			utils.ErrorJSONGin(c, http.StatusMethodNotAllowed, utils.ErrMethodNotAllowed)
+			c.Abort() // Prevent pending handlers from being called
+			return
+		}
+		c.Next()
+	}
+}
+
 
 func main() {
 	cfg, err := models.LoadConfig()
@@ -28,11 +65,19 @@ func main() {
 	// Database setup
 	dbConnString := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
-	d, err := db.Connect(dbConnString) // Assuming Connect takes the conn string
+	d, err := db.Connect(dbConnString)
 	if err != nil {
 		log.Fatalf("Error connecting to database: %v", err)
 	}
 	defer d.Close()
+
+	// Tune DB connection pool (example values)
+	d.SetMaxOpenConns(25) // Max number of open connections to the database
+	d.SetMaxIdleConns(25) // Max number of connections in the idle connection pool
+	d.SetConnMaxLifetime(5*time.Minute) // Max amount of time a connection may be reused
+
+	log.Println("Successfully connected to Database and configured connection pool.")
+
 
 	// Redis client setup
 	rdb := redis.NewClient(&redis.Options{
@@ -42,54 +87,49 @@ func main() {
 	})
 	defer rdb.Close()
 
-	// Test Redis connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := rdb.Ping(ctx).Result(); err != nil {
+	ctxPing, cancelPing := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelPing()
+	if _, err := rdb.Ping(ctxPing).Result(); err != nil {
 		log.Fatalf("Could not connect to Redis: %v", err)
 	}
 	log.Println("Successfully connected to Redis")
 
-	// Prometheus and monitoring setup
-	// Note: promhttp.Handler() is typically registered on a separate admin/metrics port
-	// or using a separate ServeMux if your main router has middleware that might interfere.
-	// For simplicity, keeping it on the main router for now.
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/metrics", promhttp.Handler())
+	// Prometheus metrics server (runs on a separate goroutine and port)
 	go func() {
-		log.Println("Metrics server starting on :9091") // Example: run metrics on a different port
-		if err := http.ListenAndServe(":9091", metricsMux); err != nil {
+		metricsRouter := gin.New() // Use a separate Gin engine for metrics for isolation
+		metricsRouter.GET("/metrics", gin.WrapH(promhttp.Handler()))
+		log.Println("Metrics server starting on :9091")
+		if err := http.ListenAndServe(":9091", metricsRouter); err != nil && err != http.ErrServerClosed {
 			log.Printf("Metrics server error: %s\n", err)
 		}
 	}()
-	utils.InitMetrics()
+	utils.InitMetrics() // Registers custom metrics like CacheActionsTotal, DBOperationDuration
 
-	// Create the main router
-	router := chi.NewRouter()
+	// Main application router (Gin)
+	// gin.SetMode(gin.ReleaseMode) // Uncomment for production
+	router := gin.Default() // Default includes logger and recovery middleware
 
-	// Initialize handlers with dependencies
-	deliveryHandler := handler.NewDeliveryHandler(d, rdb) // Pass DB and Redis client
+	// Apply custom Prometheus middleware
+	router.Use(GinPrometheusMiddleware())
 
-	// HTTP Metrics Middleware
-	httpMetricsMiddleware := func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			start := time.Now()
-			ww := utils.NewResponseWriterWrapper(w) // To capture status code
-			next.ServeHTTP(ww, r)
-			duration := time.Since(start)
-			utils.HTTPRequestDuration.With(prometheus.Labels{
-				"path":   r.URL.Path, // Or use chi.RouteContext(r.Context()).RoutePattern() for patterned path
-				"method": r.Method,
-				"code":   fmt.Sprintf("%d", ww.StatusCode()),
-			}).Observe(duration.Seconds())
-		})
+	// Initialize handlers (DeliveryHandler needs to be adapted for Gin)
+	// For now, assuming DeliveryHandler is a struct with ServeHTTPForGin(c *gin.Context)
+	deliveryHandler := handler.NewDeliveryHandler(d, rdb)
+
+	// Routes
+	v1 := router.Group("/v1")
+	{
+		// Apply method guard middleware to specific routes or groups
+		deliveryRoutes := v1.Group("/delivery")
+		deliveryRoutes.Use(MethodGuardGin("GET"))
+		{
+			// Assuming DeliveryHandler.ServeHTTP is adapted to gin.HandlerFunc
+			// e.g. by having a method like deliveryHandler.GetDelivery(c *gin.Context)
+			// This will be refactored in the handler step.
+			// For now, let's assume a placeholder or direct adaptation.
+			deliveryRoutes.GET("", deliveryHandler.ServeHTTPGin)
+		}
 	}
-
-	router.Use(httpMetricsMiddleware) // Apply middleware to all routes
-
-	router.Route("/v1", func(v1 chi.Router) {
-		v1.With(utils.MethodGuard("GET")).Get("/delivery", deliveryHandler.ServeHTTP) // Use the method from the handler instance
-	})
 
 	// Server setup
 	server := &http.Server{
@@ -99,9 +139,9 @@ func main() {
 
 	// Graceful shutdown
 	go func() {
-		log.Printf("Server starting on port %s", cfg.AppPort)
+		log.Printf("Main application server starting on port %s", cfg.AppPort)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe error: %v", err)
+			log.Fatalf("ListenAndServe error for main server: %v", err)
 		}
 	}()
 

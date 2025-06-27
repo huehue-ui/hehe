@@ -1,64 +1,19 @@
 package utils
 
 import (
-	"encoding/json"
-	"net/http"
+	"github.com/gin-gonic/gin"
 )
 
-func MethodGuard(method string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			RequestCount.WithLabelValues(r.URL.Path, r.Method).Inc()
-
-			if r.Method != method {
-				ErrorJSON(w, http.StatusMethodNotAllowed, ErrMethodNotAllowed)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
+// ErrorJSONGin sends a JSON error response using Gin's context.
+// It sets the appropriate HTTP status code and sends a JSON body
+// in the format: {"error": "message"}.
+func ErrorJSONGin(c *gin.Context, status int, msg string) {
+	c.JSON(status, gin.H{"error": msg})
 }
 
-func WriteJSON(w http.ResponseWriter, status int, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func ErrorJSON(w http.ResponseWriter, status int, msg string) {
-	WriteJSON(w, status, map[string]string{"error": msg})
-}
-
-// ResponseWriterWrapper helps capture the status code for metrics
-type ResponseWriterWrapper struct {
-	http.ResponseWriter
-	statusCode int
-	wroteHeader bool
-}
-
-func NewResponseWriterWrapper(w http.ResponseWriter) *ResponseWriterWrapper {
-	return &ResponseWriterWrapper{ResponseWriter: w, statusCode: http.StatusOK}
-}
-
-func (rww *ResponseWriterWrapper) WriteHeader(statusCode int) {
-	if rww.wroteHeader {
-		return
-	}
-	rww.statusCode = statusCode
-	rww.ResponseWriter.WriteHeader(statusCode)
-	rww.wroteHeader = true
-}
-
-// Write satisfies the http.ResponseWriter interface and ensures the status code is recorded
-// if WriteHeader has not been called.
-func (rww *ResponseWriterWrapper) Write(b []byte) (int, error) {
-	if !rww.wroteHeader {
-		// Default to 200 OK if WriteHeader is not called before Write
-		rww.WriteHeader(http.StatusOK)
-	}
-	return rww.ResponseWriter.Write(b)
-}
-
-func (rww *ResponseWriterWrapper) StatusCode() int {
-	return rww.statusCode
-}
+// Note: The previous Chi-specific helpers (MethodGuard, WriteJSON, ErrorJSON)
+// and ResponseWriterWrapper have been removed as they are superseded by
+// Gin-specific mechanisms or no longer needed with Gin's context.
+// For example, Gin handlers directly use c.JSON(), c.String(), etc., for responses,
+// and c.Writer.Status() provides the status code for metrics.
+// Method guarding is handled by Gin middleware defined in main.go.
